@@ -30,8 +30,7 @@ async def write_influx_db(influxdb_client, bucket, record, write_precision="s"):
         ok_response = await write_api.write(bucket=bucket, record=record, write_precision=write_precision)
         
         if not ok_response:
-            raise InfluxDBError(f"An error occurred during writing: {record}")
-
+            raise InfluxDBError(f"An error occurred during writing: {record}.")
 
 async def main():
     SLEEP_INTERVAL = 5 # seconds
@@ -39,6 +38,11 @@ async def main():
     
     COINCAP_BASE_API_URL = "https://api.coincap.io/v2/markets?exchangeId={}&baseSymbol={}&quoteSymbol={}" # https://docs.coincap.io/
     COINCAP_API_KEY = CONFIG.get("COINCAP_API_KEY")
+
+    INFLUXDB_URL = CONFIG.get("INFLUXDB_URL")
+    INFLUXDB_TOKEN = CONFIG.get("INFLUXDB_TOKEN")
+    INFLUXDB_ORG = CONFIG.get("INFLUXDB_ORG")
+    INFLUXDB_BUCKET = CONFIG.get("INFLUXDB_BUCKET")
 
     exchange_api_endpoints = {
         "gdax": {"name": "Coinbase Pro", "base_url": COINCAP_BASE_API_URL, "api_key": COINCAP_API_KEY, "pairs": ["BTC/EUR", "BTC/USD"]},
@@ -55,39 +59,30 @@ async def main():
                     api_key = cred.get("api_key")
                     pairs = cred.get("pairs", [])
 
-                    for p in pairs:
-                        if len(p.split("/")) != 2:
+                    for pair in pairs:
+                        if len(pair.split("/")) != 2:
                             continue
 
-                        crypto_symbol, currency_symbol = p.split("/")
+                        crypto_symbol, currency_symbol = pair.split("/")
                         url = base_url.format(exch, crypto_symbol.lower(), currency_symbol.lower())
                         tasks.append(fetch(session, url, api_key))
-
-                responses = await asyncio.gather(*tasks)
-
-            influxdb_url = CONFIG.get("INFLUXDB_URL")
-            influxdb_token = CONFIG.get("INFLUXDB_TOKEN")
-            influxdb_org = CONFIG.get("INFLUXDB_ORG")
-            influxdb_bucket = CONFIG.get("INFLUXDB_BUCKET")
                 
-            async with InfluxDBClientAsync(url=influxdb_url, token=influxdb_token, org=influxdb_org) as influxdb_client:
-                tasks = list()
-                for r in responses:
-                    for data in r.get("data", []):
-                        exchangeId = data.get("exchangeId")
-                        crypto_symbol = data.get("baseSymbol")
-                        currency_symbol = data.get("quoteSymbol")
-                        
-                        exchange = exchange_api_endpoints.get(exchangeId).get("name")
-                        price = float(data.get("priceQuote"))
+                async with InfluxDBClientAsync(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG) as influxdb_client:
+                    for task in asyncio.as_completed(tasks):
+                        response = await task
+                        for data in response.get("data", []):
+                            exchangeId = data.get("exchangeId")
+                            crypto_symbol = data.get("baseSymbol")
+                            currency_symbol = data.get("quoteSymbol")
+                            
+                            exchange = exchange_api_endpoints.get(exchangeId).get("name")
+                            price = float(data.get("priceQuote"))
 
-                        price_point = Point(crypto_symbol).tag("Exchange", exchange).tag("Currency", currency_symbol).field("Price", price)
-                        tasks.append(write_influx_db(influxdb_client, influxdb_bucket, price_point))
-                
-                await asyncio.gather(*tasks)
+                            price_point = Point(crypto_symbol).tag("Exchange", exchange).tag("Currency", currency_symbol).field("Price", price)
+                            await write_influx_db(influxdb_client, INFLUXDB_BUCKET, price_point)
 
         except Exception as e:
-            print(f"Exception: {e}")
+            print(f"Exception: {e}.")
 
         await asyncio.sleep(SLEEP_INTERVAL)
 
